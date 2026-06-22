@@ -1,0 +1,18 @@
+{
+  "name": "Habitos Local First",
+  "short_name": "Habitos",
+  "description": "Registro local de habitos sin cuenta.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#eefcfd",
+  "theme_color": "#1689a4",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

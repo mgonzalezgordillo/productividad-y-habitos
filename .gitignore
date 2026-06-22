@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+coverage
+playwright-report
+test-results
+tsconfig.tsbuildinfo
+.env*.local
+npm-debug.log*
+HABITOS-ATOMICOS-JAMES-CLEAR.pdf
