@@ -44,7 +44,12 @@ export const db = new HabitDatabase();
 
 export const withMigrationBackup = async (reason: string): Promise<void> => {
   const { createExportPayload } = await import("./backup");
-  const payload = await createExportPayload();
+  const payload = await createExportPayload({
+    settings: (await db.settings.toArray())[0] ?? null,
+    habits: await db.habits.toArray(),
+    habitSchedules: await db.habitSchedules.toArray(),
+    habitEntries: await db.habitEntries.toArray()
+  });
   await db.appBackups.add({
     id: crypto.randomUUID(),
     version: payload.schemaVersion,

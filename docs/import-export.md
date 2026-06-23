@@ -15,3 +15,5 @@ La importacion valida con Zod:
 - Tamano maximo del archivo.
 
 Antes de fusionar o reemplazar se crea un respaldo automatico. La sustitucion requiere confirmacion explicita.
+
+Durante la importacion, los registros se reasignan al UID autenticado actual. Ningun backup importado puede sobrescribir la identidad de otra cuenta.

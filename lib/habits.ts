@@ -1,20 +1,14 @@
 import type { Habit, HabitSchedule, HabitType, WeekdayIso } from "./types";
 import { isoWeekday, nowUtcIso } from "./date";
-import { accountEmailForRecord, LOCAL_ACCOUNT } from "./account";
 
 export const DEFAULT_COLOR = "#1689a4";
 export const ALL_WEEKDAYS: WeekdayIso[] = [1, 2, 3, 4, 5, 6, 7];
 
-const accountScopedDefaultId = (baseId: string, accountKey: string): string =>
-  accountKey === LOCAL_ACCOUNT ? baseId : `${accountKey}:${baseId}`;
-
-export const defaultHabits = (startDate: string, accountKey = LOCAL_ACCOUNT): Habit[] => {
+export const defaultHabits = (startDate: string): Habit[] => {
   const now = nowUtcIso();
-  const accountEmail = accountEmailForRecord(accountKey);
   return [
     {
-      id: accountScopedDefaultId("default-sleep-7h", accountKey),
-      accountEmail,
+      id: "default-sleep-7h",
       name: "Dormir +7 horas",
       description: "Registrar el descanso principal del dia.",
       type: "DURATION",
@@ -29,8 +23,7 @@ export const defaultHabits = (startDate: string, accountKey = LOCAL_ACCOUNT): Ha
       updatedAt: now
     },
     {
-      id: accountScopedDefaultId("default-make-bed", accountKey),
-      accountEmail,
+      id: "default-make-bed",
       name: "Hacer la cama",
       description: "Una accion breve para empezar con orden.",
       type: "BOOLEAN",
@@ -43,8 +36,7 @@ export const defaultHabits = (startDate: string, accountKey = LOCAL_ACCOUNT): Ha
       updatedAt: now
     },
     {
-      id: accountScopedDefaultId("default-water-3l", accountKey),
-      accountEmail,
+      id: "default-water-3l",
       name: "Beber +3 litros de agua",
       description: "Registrar el agua total del dia.",
       type: "QUANTITY",
@@ -59,8 +51,7 @@ export const defaultHabits = (startDate: string, accountKey = LOCAL_ACCOUNT): Ha
       updatedAt: now
     },
     {
-      id: accountScopedDefaultId("default-sport", accountKey),
-      accountEmail,
+      id: "default-sport",
       name: "Hacer deporte",
       description: "Movimiento adaptado al dia.",
       type: "BOOLEAN",
@@ -77,13 +68,11 @@ export const defaultHabits = (startDate: string, accountKey = LOCAL_ACCOUNT): Ha
 
 export const schedulesForHabit = (
   habitId: string,
-  enabledDays: WeekdayIso[] = ALL_WEEKDAYS,
-  accountKey = LOCAL_ACCOUNT
+  enabledDays: WeekdayIso[] = ALL_WEEKDAYS
 ): HabitSchedule[] =>
   ALL_WEEKDAYS.map((dayOfWeek) => ({
     id: `${habitId}-${dayOfWeek}`,
     habitId,
-    accountEmail: accountEmailForRecord(accountKey),
     dayOfWeek,
     enabled: enabledDays.includes(dayOfWeek)
   }));

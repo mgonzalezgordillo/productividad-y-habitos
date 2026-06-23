@@ -7,6 +7,7 @@ export type PeriodKind = "1d" | "30d" | "90d" | "365d";
 
 export interface Settings {
   id: string;
+  userId?: string;
   accountEmail?: string;
   timezone: string;
   dayBoundaryTime: string;
@@ -19,6 +20,7 @@ export interface Settings {
 
 export interface Habit {
   id: string;
+  userId?: string;
   accountEmail?: string;
   name: string;
   description?: string;
@@ -40,6 +42,7 @@ export interface Habit {
 export interface HabitSchedule {
   id: string;
   habitId: string;
+  userId?: string;
   accountEmail?: string;
   dayOfWeek: WeekdayIso;
   enabled: boolean;
@@ -48,6 +51,7 @@ export interface HabitSchedule {
 export interface HabitEntry {
   id: string;
   habitId: string;
+  userId?: string;
   accountEmail?: string;
   localDate: string;
   status: EntryStatus;
@@ -68,7 +72,7 @@ export interface AppBackup {
 }
 
 export interface AuthSession {
-  id: "google";
+  id: string;
   email: string;
   name: string;
   picture?: string;
@@ -76,6 +80,13 @@ export interface AuthSession {
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  name?: string;
+  picture?: string;
 }
 
 export interface ExportPayload {

@@ -20,29 +20,31 @@ Publica el contenido de `out`. Si se usa un subdirectorio, configura `basePath` 
 
 El workflow incluido usa GitHub Actions y lee estas variables del repositorio:
 
-- `NEXT_PUBLIC_GOOGLE_CLIENT_ID`
+- `NEXT_PUBLIC_FIREBASE_API_KEY`
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
+- `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
+- `NEXT_PUBLIC_FIREBASE_APP_ID`
 - `NEXT_PUBLIC_ALLOWED_GOOGLE_EMAILS`
 
 Configuralas en `Settings` -> `Secrets and variables` -> `Actions` -> `Variables`.
 
-El build de GitHub Pages ejecuta `npm run validate:oauth` antes de publicar. Si `NEXT_PUBLIC_GOOGLE_CLIENT_ID` falta, contiene un placeholder o no termina en `.apps.googleusercontent.com`, el despliegue falla para evitar enviar un `client_id` invalido a Google.
+El build de GitHub Pages ejecuta `npm run validate:firebase-config` antes de publicar. Si falta alguna variable publica o contiene un placeholder, el despliegue falla.
 
-## Google Identity Services
+## Firebase
 
 Configuracion detectada:
 
-- Flujo: popup con Google Identity Services e ID Token.
-- Variable publica: `NEXT_PUBLIC_GOOGLE_CLIENT_ID`.
+- Autenticacion: Firebase Authentication con Google.
+- Base de datos: Cloud Firestore.
+- Identidad principal: `uid`.
+- Correo: atributo de perfil.
 - URL de produccion: `https://mgonzalezgordillo.github.io/productividad-y-habitos/`.
 - Origen de JavaScript de produccion: `https://mgonzalezgordillo.github.io`.
 - Origen local: `http://localhost:3000`.
 - Origen local alternativo: `http://127.0.0.1:3000`.
-- Redirect URI: no aplica para este flujo.
 
-En Google Cloud Console, el OAuth Client ID debe ser de tipo `Aplicacion web`. En `Orígenes de JavaScript autorizados`, añade solo los origenes, sin rutas:
+En Firebase Console, añade los dominios autorizados y publica las reglas de Firestore incluidas en `firestore.rules`.
 
-- `http://localhost:3000`
-- `http://127.0.0.1:3000`
-- `https://mgonzalezgordillo.github.io`
-
-No añadas `client_secret` al frontend. Esta aplicacion no lo necesita.
+No añadas `client_secret` al frontend.

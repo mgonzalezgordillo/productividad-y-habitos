@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Habitos Local First",
-  description: "Registro local-first de habitos sin cuenta ni backend obligatorio.",
+  title: "Habitos y Productividad",
+  description: "Registro de habitos con inicio de sesion con Google y sincronizacion por cuenta.",
   manifest: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/manifest.webmanifest`
 };
 

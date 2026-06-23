@@ -1,5 +1,10 @@
 import { AppShell } from "@/components/app-shell";
+import { AuthProvider } from "@/components/auth-provider";
 
 export default function Home() {
-  return <AppShell />;
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
+  );
 }

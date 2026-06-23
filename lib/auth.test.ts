@@ -1,33 +1,43 @@
-import { describe, expect, it } from "vitest";
-import { getGoogleClientIdConfig, maskGoogleClientId, validateGoogleClientId } from "./auth";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-describe("configuracion de Google OAuth", () => {
-  it("rechaza un Client ID ausente o vacio", () => {
-    expect(() => validateGoogleClientId(undefined)).toThrow("Falta la configuracion");
-    expect(() => validateGoogleClientId("")).toThrow("Falta la configuracion");
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.resetModules();
+});
+
+describe("autenticacion y acceso", () => {
+  it("parsea la lista de emails permitidos y normaliza espacios", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ALLOWED_GOOGLE_EMAILS", " test@gmail.com , otra@correo.com ");
+    const auth = await import("./auth");
+    expect(auth.allowedGoogleEmails).toEqual(["test@gmail.com", "otra@correo.com"]);
   });
 
-  it("rechaza placeholders como Client ID", () => {
-    expect(() => validateGoogleClientId("NEXT_PUBLIC_GOOGLE_CLIENT_ID")).toThrow("placeholder");
-    expect(() => validateGoogleClientId("TU_CLIENT_ID.apps.googleusercontent.com")).toThrow("placeholder");
+  it("reconoce un email autorizado", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ALLOWED_GOOGLE_EMAILS", "test@gmail.com");
+    const auth = await import("./auth");
+    expect(auth.isAllowedGoogleEmail("test@gmail.com")).toBe(true);
   });
 
-  it("rechaza comillas, espacios y formatos que no son OAuth Client ID web", () => {
-    expect(() => validateGoogleClientId(" 123456789-test.apps.googleusercontent.com")).toThrow("espacios");
-    expect(() => validateGoogleClientId('"123456789-test.apps.googleusercontent.com"')).toThrow("comillas");
-    expect(() => validateGoogleClientId("AIza-not-a-client-id")).toThrow("formato");
-    expect(() => validateGoogleClientId("123456789-test")).toThrow("formato");
+  it("rechaza un email no autorizado cuando existe lista permitida", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ALLOWED_GOOGLE_EMAILS", "test@gmail.com");
+    const auth = await import("./auth");
+    expect(auth.isAllowedGoogleEmail("otra@correo.com")).toBe(false);
   });
 
-  it("acepta un Client ID web valido y lo normaliza sin exponerlo completo", () => {
-    const clientId = "1234567890-abcdefghi.apps.googleusercontent.com";
-    expect(validateGoogleClientId(clientId)).toBe(clientId);
-    expect(maskGoogleClientId(clientId)).toBe("1234...fghi.apps.googleusercontent.com");
-  });
-
-  it("devuelve error local y no un Client ID cuando la configuracion es invalida", () => {
-    const config = getGoogleClientIdConfig("NEXT_PUBLIC_GOOGLE_CLIENT_ID");
-    expect(config.clientId).toBeNull();
-    expect(config.error).toMatch(/placeholder/);
+  it("convierte el usuario autenticado a la estructura interna estable", async () => {
+    const auth = await import("./auth");
+    expect(
+      auth.toAuthenticatedUser({
+        uid: "uid-123",
+        email: "user@example.com",
+        displayName: "User",
+        photoURL: "https://example.com/p.png"
+      } as never)
+    ).toEqual({
+      id: "uid-123",
+      email: "user@example.com",
+      name: "User",
+      picture: "https://example.com/p.png"
+    });
   });
 });

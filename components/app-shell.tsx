@@ -38,6 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import {
+  createExportPayload,
   exportCsvBlob,
   exportJsonBlob,
   mergeData,
@@ -45,16 +46,8 @@ import {
   replaceAllData,
   saveAutomaticBackup
 } from "@/lib/backup";
-import {
-  accountEmailForRecord,
-  accountKeyFromSession,
-  accountMatches,
-  LOCAL_ACCOUNT,
-  settingsIdForAccount
-} from "@/lib/account";
 import { currentOperationalDate, formatLocalDate, nextBoundaryAfter, shiftPeriod } from "@/lib/date";
-import { db } from "@/lib/db";
-import { finalizeExpiredDays } from "@/lib/finalize";
+import { useAuth } from "@/components/auth-provider";
 import { GoogleLogin } from "@/components/google-login";
 import {
   ALL_WEEKDAYS,
@@ -64,8 +57,24 @@ import {
   schedulesForHabit,
   statusForValue
 } from "@/lib/habits";
-import { getValidAuthSession, signOut } from "@/lib/auth";
-import { migrateDefaultSleepToHours } from "@/lib/local-migrations";
+import {
+  bulkUpsertEntriesRemote,
+  deleteHabitRemote,
+  deleteEntryRemote,
+  deleteWorkspaceRemote,
+  ensureUserProfile,
+  getLegacyLocalWorkspace,
+  getWorkspaceSnapshot,
+  type LegacyLocalWorkspace,
+  clearLegacyLocalWorkspace,
+  markLocalMigrationCompleted,
+  saveSettingsRemote,
+  watchWorkspace,
+  upsertEntryRemote,
+  upsertHabitRemote,
+  upsertSchedulesRemote,
+  type WorkspaceSnapshot
+} from "@/lib/user-data";
 import { calculatePeriodMetrics, calculateStreaks, computedStatusFor, getEntry } from "@/lib/metrics";
 import { registerServiceWorker } from "@/lib/pwa";
 import { habitFormSchema, type HabitFormValues } from "@/lib/schemas";
@@ -78,9 +87,9 @@ import type {
   HabitSchedule,
   HabitType,
   PeriodKind,
-  Settings,
-  AuthSession
+  Settings
 } from "@/lib/types";
+import { finalizeExpiredDaysData } from "@/lib/finalize";
 
 type Section = ReturnType<typeof useUiStore.getState>["section"];
 type IconName = "Moon" | "Bed" | "Droplet" | "Dumbbell" | "Check" | "Clock3" | "Plus";
@@ -136,9 +145,8 @@ const normalizeDurationSelectValue = (value: number): string => {
   return String(value);
 };
 
-const emptySettings = (accountKey = LOCAL_ACCOUNT): Settings => ({
-  id: settingsIdForAccount(accountKey),
-  accountEmail: accountEmailForRecord(accountKey),
+const emptySettings = (): Settings => ({
+  id: "current",
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   dayBoundaryTime: "00:00",
   locale: "es-ES",
@@ -156,6 +164,18 @@ const downloadBlob = (blob: Blob, filename: string) => {
   anchor.click();
   URL.revokeObjectURL(url);
 };
+
+const createWorkspaceSnapshot = (
+  settings: Settings | null,
+  habits: Habit[],
+  habitSchedules: HabitSchedule[],
+  habitEntries: HabitEntry[]
+): WorkspaceSnapshot => ({
+  settings,
+  habits,
+  habitSchedules,
+  habitEntries
+});
 
 const statusInfo: Record<EntryStatus, { label: string; className: string; icon: React.ReactNode }> = {
   COMPLETED: {
@@ -190,11 +210,12 @@ export function AppShell() {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [schedules, setSchedules] = useState<HabitSchedule[]>([]);
   const [entries, setEntries] = useState<HabitEntry[]>([]);
-  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
-  const [accountKey, setAccountKey] = useState(LOCAL_ACCOUNT);
+  const { user, loading: authLoading, error: authError, signOut } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [migrationNeeded, setMigrationNeeded] = useState<LegacyLocalWorkspace | null>(null);
+  const [migrationDismissed, setMigrationDismissed] = useState(false);
   const section = useUiStore((state) => state.section);
   const setSection = useUiStore((state) => state.setSection);
   const selectedDate = useUiStore((state) => state.selectedDate);
@@ -206,42 +227,56 @@ export function AppShell() {
   const liveMessage = useUiStore((state) => state.liveMessage);
   const timerRef = useRef<number | null>(null);
 
-  const loadData = useCallback(async (options?: { finalize?: boolean }) => {
-    const validSession = await getValidAuthSession();
-    setAuthSession(validSession);
-    const nextAccountKey = accountKeyFromSession(validSession);
-    setAccountKey(nextAccountKey);
-    const settingsId = settingsIdForAccount(nextAccountKey);
-    const foundSettings = (await db.settings.get(settingsId)) ?? null;
-    await migrateDefaultSleepToHours(nextAccountKey);
-    if (foundSettings && options?.finalize !== false) {
-      await finalizeExpiredDays(foundSettings, new Date(), nextAccountKey);
+  const loadData = useCallback(async (options?: { silent?: boolean }) => {
+    if (!user) {
+      setSettings(null);
+      setHabits([]);
+      setSchedules([]);
+      setEntries([]);
+      setMigrationNeeded(null);
+      setMigrationDismissed(false);
+      setLoading(false);
+      return;
     }
-    const scopedHabits = (await db.habits.orderBy("sortOrder").toArray()).filter((habit) =>
-      accountMatches(habit.accountEmail, nextAccountKey)
-    );
-    const habitIds = new Set(scopedHabits.map((habit) => habit.id));
-    const scopedSchedules = (await db.habitSchedules.toArray()).filter(
-      (schedule) => accountMatches(schedule.accountEmail, nextAccountKey) && habitIds.has(schedule.habitId)
-    );
-    const scopedEntries = (await db.habitEntries.toArray()).filter(
-      (entry) => accountMatches(entry.accountEmail, nextAccountKey) && habitIds.has(entry.habitId)
-    );
-    const [nextSettings, nextHabits, nextSchedules, nextEntries] = await Promise.all([
-      db.settings.get(settingsId),
-      Promise.resolve(scopedHabits),
-      Promise.resolve(scopedSchedules),
-      Promise.resolve(scopedEntries)
-    ]);
-    setSettings(nextSettings ?? null);
-    setHabits(nextHabits);
-    setSchedules(nextSchedules);
-    setEntries(nextEntries);
-    if (nextSettings) {
-      setSelectedDate(currentOperationalDate(new Date(), nextSettings.timezone, nextSettings.dayBoundaryTime));
+
+    if (!options?.silent) {
+      setLoading(true);
     }
-    setLoading(false);
-  }, [setSelectedDate]);
+    await ensureUserProfile(user.id, user.email, user.name, user.picture);
+    const remoteWorkspace = await getWorkspaceSnapshot(user.id);
+    const finalized = remoteWorkspace.settings
+      ? finalizeExpiredDaysData(
+          remoteWorkspace.habits,
+          remoteWorkspace.habitSchedules,
+          remoteWorkspace.habitEntries,
+          remoteWorkspace.settings,
+          new Date()
+        )
+      : { entries: [], checkedDates: [] };
+    if (finalized.entries.length) {
+      await bulkUpsertEntriesRemote(user.id, finalized.entries);
+    }
+    const nextWorkspace = finalized.entries.length
+      ? { ...remoteWorkspace, habitEntries: [...remoteWorkspace.habitEntries, ...finalized.entries] }
+      : remoteWorkspace;
+    setSettings(nextWorkspace.settings);
+    setHabits(nextWorkspace.habits);
+    setSchedules(nextWorkspace.habitSchedules);
+    setEntries(nextWorkspace.habitEntries);
+    const legacyWorkspace = await getLegacyLocalWorkspace();
+    setMigrationNeeded(
+      !migrationDismissed &&
+      (legacyWorkspace.settings.length || legacyWorkspace.habits.length || legacyWorkspace.habitSchedules.length || legacyWorkspace.habitEntries.length)
+        ? legacyWorkspace
+        : null
+    );
+    if (nextWorkspace.settings) {
+      setSelectedDate(currentOperationalDate(new Date(), nextWorkspace.settings.timezone, nextWorkspace.settings.dayBoundaryTime));
+    }
+    if (!options?.silent) {
+      setLoading(false);
+    }
+  }, [migrationDismissed, setSelectedDate, user]);
 
   useEffect(() => {
     void loadData();
@@ -249,42 +284,105 @@ export function AppShell() {
   }, [loadData]);
 
   useEffect(() => {
-    if (!settings?.onboardingCompleted) return;
-    const run = () => {
-      void loadData().then(() => announce("Datos revisados tras recuperar la aplicacion."));
-    };
-    const events = ["visibilitychange", "focus", "pageshow", "online"] as const;
-    events.forEach((event) => window.addEventListener(event, run));
-    return () => events.forEach((event) => window.removeEventListener(event, run));
-  }, [announce, loadData, settings?.onboardingCompleted, settings?.timezone, settings?.dayBoundaryTime]);
+    setMigrationDismissed(false);
+  }, [user?.id]);
 
   useEffect(() => {
-    if (!settings?.onboardingCompleted) return;
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    const schedule = () => {
-      const boundary = nextBoundaryAfter(new Date(), settings.timezone, settings.dayBoundaryTime);
-      const delay = Math.max(1_000, boundary.getTime() - Date.now() + 1_000);
-      timerRef.current = window.setTimeout(() => {
-        void loadData().then(schedule);
-      }, delay);
+    if (!user) return;
+    const unsubscribe = watchWorkspace(
+      user.id,
+      (workspace) => {
+        setSettings(workspace.settings);
+        setHabits(workspace.habits);
+        setSchedules(workspace.habitSchedules);
+        setEntries(workspace.habitEntries);
+        if (workspace.settings) {
+          setSelectedDate(currentOperationalDate(new Date(), workspace.settings.timezone, workspace.settings.dayBoundaryTime));
+        }
+      },
+      (workspaceError) => setError(workspaceError.message)
+    );
+    const events = ["visibilitychange", "focus", "pageshow", "online"] as const;
+    const refresh = () => {
+      void loadData({ silent: true }).then(() => announce("Datos revisados tras recuperar la aplicacion."));
     };
-    schedule();
+    events.forEach((event) => window.addEventListener(event, refresh));
+    if (settings?.onboardingCompleted) {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      const schedule = () => {
+        const boundary = nextBoundaryAfter(new Date(), settings.timezone, settings.dayBoundaryTime);
+        const delay = Math.max(1_000, boundary.getTime() - Date.now() + 1_000);
+        timerRef.current = window.setTimeout(() => {
+          void loadData().then(schedule);
+        }, delay);
+      };
+      schedule();
+    }
     return () => {
+      unsubscribe();
+      events.forEach((event) => window.removeEventListener(event, refresh));
       if (timerRef.current) window.clearTimeout(timerRef.current);
     };
-  }, [loadData, settings?.timezone, settings?.dayBoundaryTime, settings?.onboardingCompleted]);
+  }, [announce, loadData, setSelectedDate, settings?.dayBoundaryTime, settings?.onboardingCompleted, settings?.timezone, user]);
+
+  const handleLegacyMigration = useCallback(
+    async (mode: "merge" | "replace" | "skip") => {
+      if (!user || !migrationNeeded) return;
+      if (mode === "skip") {
+        setMigrationNeeded(null);
+        setMigrationDismissed(true);
+        return;
+      }
+      const payload = await createExportPayload({
+        settings: migrationNeeded.settings[0] ?? null,
+        habits: migrationNeeded.habits,
+        habitSchedules: migrationNeeded.habitSchedules,
+        habitEntries: migrationNeeded.habitEntries
+      });
+      await saveAutomaticBackup(createWorkspaceSnapshot(settings, habits, schedules, entries), "pre-local-migration");
+      if (mode === "replace") await replaceAllData(user.id, payload);
+      else await mergeData(user.id, payload);
+      await markLocalMigrationCompleted(user.id);
+      setMigrationNeeded(null);
+      setMigrationDismissed(true);
+      await loadData();
+    },
+    [entries, habits, loadData, migrationNeeded, schedules, settings, user]
+  );
 
   const orderedHabits = useMemo(
     () => habits.filter((habit) => !habit.deletedAt).sort((a, b) => a.sortOrder - b.sortOrder),
     [habits]
   );
 
-  if (loading) {
-    return <div className="grid min-h-screen place-items-center bg-turquoise-blue-50">Cargando datos locales...</div>;
+  if (authLoading || loading) {
+    return <div className="grid min-h-screen place-items-center bg-turquoise-blue-50">Cargando datos de la cuenta...</div>;
+  }
+
+  if (!user) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-turquoise-blue-50 p-4">
+        <section className="w-full max-w-2xl rounded-lg border border-turquoise-blue-100 bg-white p-6 shadow-soft">
+          <p className="text-sm font-semibold text-turquoise-blue-700">Acceso</p>
+          <h1 className="mt-2 text-3xl font-semibold">Inicia sesion para ver tus habitos</h1>
+          <p className="mt-4 text-turquoise-blue-800">
+            Tus datos se guardan bajo tu cuenta de Google y se sincronizan entre dispositivos. No se mostrara ningun dato privado hasta completar la sesion.
+          </p>
+          <div className="mt-6">
+            <GoogleLogin />
+          </div>
+          {authError ? (
+            <p className="mt-4 rounded-md border border-red-700 bg-red-50 p-3 text-sm text-red-900" role="alert">
+              {authError}
+            </p>
+          ) : null}
+        </section>
+      </main>
+    );
   }
 
   if (!settings?.onboardingCompleted) {
-    return <Onboarding onComplete={loadData} existingHabits={habits} accountKey={accountKey} />;
+    return <Onboarding onComplete={loadData} existingHabits={habits} />;
   }
 
   const renderSection = () => {
@@ -299,7 +397,6 @@ export function AppShell() {
           setSelectedDate={setSelectedDate}
           onReload={loadData}
           onError={setError}
-          accountKey={accountKey}
         />
       );
     }
@@ -326,10 +423,10 @@ export function AppShell() {
         <HabitsPanel
           habits={habits}
           schedules={schedules}
+          entries={entries}
           onReload={loadData}
           onError={setError}
           settings={settings}
-          accountKey={accountKey}
         />
       );
     }
@@ -337,16 +434,12 @@ export function AppShell() {
       return (
         <SettingsPanel
           settings={settings}
-          authSession={authSession}
-          accountKey={accountKey}
-          onAccountChanged={loadData}
-          onSignedOut={() => {
-            setAuthSession(null);
-            void loadData();
-          }}
+          workspace={createWorkspaceSnapshot(settings, habits, schedules, entries)}
+          onSignedOut={() => void signOut().then(() => void loadData())}
           onReload={loadData}
           onSettings={setSettings}
           onError={setError}
+          userEmail={user.email}
         />
       );
     }
@@ -357,23 +450,37 @@ export function AppShell() {
   return (
     <Tooltip.Provider>
       <div className="min-h-screen bg-turquoise-blue-50 text-turquoise-blue-950">
+        {migrationNeeded ? (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-turquoise-blue-950/40 p-4">
+            <div className="w-full max-w-xl rounded-lg border border-turquoise-blue-100 bg-white p-6 shadow-soft">
+              <p className="text-sm font-semibold text-turquoise-blue-700">Migracion local detectada</p>
+              <h2 className="mt-2 text-2xl font-semibold">Hemos encontrado datos guardados en este dispositivo</h2>
+              <p className="mt-3 text-turquoise-blue-800">
+                Puedes asociarlos a tu cuenta para conservarlos en todos tus dispositivos. No se borraran hasta que elijas importar o cerrar esta pantalla.
+              </p>
+              <p className="mt-3 text-sm text-turquoise-blue-800">
+                {migrationNeeded.habits.length} habitos, {migrationNeeded.habitEntries.length} registros y {migrationNeeded.habitSchedules.length} programaciones.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-2">
+                <button className="btn-primary" onClick={() => void handleLegacyMigration("merge")}>Asociar y sincronizar</button>
+                <button className="btn-secondary" onClick={() => void handleLegacyMigration("replace")}>Reemplazar por completo</button>
+                <button className="btn-secondary text-red-800" onClick={() => void handleLegacyMigration("skip")}>Empezar sin importar</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="mx-auto flex min-h-screen w-full max-w-7xl">
           <aside className="hidden w-64 shrink-0 border-r border-turquoise-blue-100 bg-white/90 p-4 lg:block">
             <div className="mb-8">
               <p className="text-lg font-semibold">Habitos</p>
-              <p className="text-sm text-turquoise-blue-800">Local-first</p>
-              {authSession ? (
-                <div className="mt-4 rounded-md border border-turquoise-blue-100 bg-turquoise-blue-50 p-3 text-sm">
-                  <p className="font-medium">{authSession.name}</p>
-                  <p className="break-all text-turquoise-blue-800">{authSession.email}</p>
-                  <button
-                    className="mt-2 min-h-9 text-sm text-turquoise-blue-700 underline"
-                    onClick={() => void signOut().then(() => { setAuthSession(null); void loadData(); })}
-                  >
-                    Cerrar sesion
-                  </button>
-                </div>
-              ) : null}
+              <p className="text-sm text-turquoise-blue-800">Sincronizado por cuenta</p>
+              <div className="mt-4 rounded-md border border-turquoise-blue-100 bg-turquoise-blue-50 p-3 text-sm">
+                <p className="font-medium">{user.name ?? user.email}</p>
+                <p className="break-all text-turquoise-blue-800">{user.email}</p>
+                <button className="mt-2 min-h-9 text-sm text-turquoise-blue-700 underline" onClick={() => void signOut().then(() => void loadData())}>
+                  Cerrar sesion
+                </button>
+              </div>
             </div>
             <nav className="space-y-2" aria-label="Navegacion principal">
               {allSections.map((item) => (
@@ -449,13 +556,12 @@ function NavButton({
 
 function Onboarding({
   onComplete,
-  existingHabits,
-  accountKey
+  existingHabits
 }: {
   onComplete: () => Promise<void>;
   existingHabits: Habit[];
-  accountKey: string;
 }) {
+  const { user } = useAuth();
   const [submitting, setSubmitting] = useState(false);
   const form = useForm<z.infer<typeof onboardingSchema>>({
     resolver: zodResolver(onboardingSchema),
@@ -466,25 +572,26 @@ function Onboarding({
   });
 
   const submit = form.handleSubmit(async (values) => {
+    if (!user) return;
     setSubmitting(true);
-    const now = nowIso();
     const startDate = currentOperationalDate(new Date(), values.timezone, values.dayBoundaryTime);
     const settings: Settings = {
-      ...emptySettings(accountKey),
+      ...emptySettings(),
       timezone: values.timezone,
       dayBoundaryTime: values.dayBoundaryTime,
       onboardingCompleted: true,
-      createdAt: now,
-      updatedAt: now
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      userId: user.id
     };
-    const seed = defaultHabits(startDate, accountKey).filter((habit) => !existingHabits.some((existing) => existing.id === habit.id));
-    await db.transaction("rw", db.settings, db.habits, db.habitSchedules, async () => {
-      await db.settings.put(settings);
-      if (seed.length) {
-        await db.habits.bulkPut(seed);
-        await db.habitSchedules.bulkPut(seed.flatMap((habit) => schedulesForHabit(habit.id, ALL_WEEKDAYS, accountKey)));
-      }
-    });
+    const seed = defaultHabits(startDate).filter((habit) => !existingHabits.some((existing) => existing.id === habit.id));
+    await saveSettingsRemote(user.id, settings);
+    await Promise.all(
+      seed.map(async (habit) => {
+        await upsertHabitRemote(user.id, { ...habit, userId: user.id });
+        await upsertSchedulesRemote(user.id, schedulesForHabit(habit.id, ALL_WEEKDAYS).map((schedule) => ({ ...schedule, userId: user.id })));
+      })
+    );
     await onComplete();
   });
 
@@ -492,9 +599,9 @@ function Onboarding({
     <main className="grid min-h-screen place-items-center bg-turquoise-blue-50 p-4">
       <form onSubmit={submit} className="w-full max-w-2xl rounded-lg border border-turquoise-blue-100 bg-white p-6 shadow-soft">
         <p className="text-sm font-semibold text-turquoise-blue-700">Primer acceso</p>
-        <h1 className="mt-2 text-3xl font-semibold">Registro de habitos local-first</h1>
+        <h1 className="mt-2 text-3xl font-semibold">Registro de habitos sincronizado por cuenta</h1>
         <p className="mt-4 text-turquoise-blue-800">
-          Tus datos se guardan en este dispositivo. No necesitas crear una cuenta. Para conservarlos o trasladarlos a otro dispositivo, realiza una copia de seguridad.
+          Tus datos se guardan bajo tu cuenta de Google. Si existen datos locales en este dispositivo, puedes asociarlos a tu cuenta para conservarlos en todos tus dispositivos.
         </p>
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
           <Field label="Zona horaria" error={form.formState.errors.timezone?.message}>
@@ -547,8 +654,7 @@ function TodayPanel({
   selectedDate,
   setSelectedDate,
   onReload,
-  onError,
-  accountKey
+  onError
 }: {
   settings: Settings;
   habits: Habit[];
@@ -558,7 +664,6 @@ function TodayPanel({
   setSelectedDate: (date: string) => void;
   onReload: () => Promise<void>;
   onError: (error: string) => void;
-  accountKey: string;
 }) {
   const setSection = useUiStore((state) => state.setSection);
   const announce = useUiStore((state) => state.announce);
@@ -620,7 +725,6 @@ function TodayPanel({
             onReload={onReload}
             onError={onError}
             onAnnounce={announce}
-            accountKey={accountKey}
           />
         ))}
         <button className="btn-primary w-fit" onClick={() => setSection("habits")}>
@@ -640,8 +744,7 @@ function HabitCard({
   selectedDate,
   onReload,
   onError,
-  onAnnounce,
-  accountKey
+  onAnnounce
 }: {
   settings: Settings;
   habit: Habit;
@@ -652,8 +755,8 @@ function HabitCard({
   onReload: () => Promise<void>;
   onError: (error: string) => void;
   onAnnounce: (message: string) => void;
-  accountKey: string;
 }) {
+  const { user } = useAuth();
   const [draftValue, setDraftValue] = useState(String(entry?.value ?? ""));
   const [draftNote, setDraftNote] = useState(entry?.note ?? "");
   const [lastEntry, setLastEntry] = useState<HabitEntry | undefined>();
@@ -667,7 +770,7 @@ function HabitCard({
   }, [entry?.id, entry?.value, entry?.note]);
 
   const writeEntry = async (value: number, nextStatus?: EntryStatus, note = draftNote) => {
-    if (!editable || status === "NOT_SCHEDULED") return;
+    if (!editable || status === "NOT_SCHEDULED" || !user) return;
     const previous = entry;
     setLastEntry(previous);
     const now = nowIso();
@@ -675,7 +778,7 @@ function HabitCard({
     const nextEntry: HabitEntry = {
       id: previous?.id ?? crypto.randomUUID(),
       habitId: habit.id,
-      accountEmail: accountEmailForRecord(accountKey),
+      userId: user.id,
       localDate: selectedDate,
       status: computed,
       value,
@@ -686,21 +789,20 @@ function HabitCard({
       updatedAt: now
     };
     try {
-      await db.habitEntries.put(nextEntry);
+      await upsertEntryRemote(user.id, nextEntry);
       await onReload();
       onAnnounce(`${habit.name}: ${statusInfo[computed].label}`);
     } catch {
       onError("No se pudo guardar el registro. Revisa el dato y vuelve a intentarlo.");
-      if (previous) await db.habitEntries.put(previous);
-      else await db.habitEntries.delete(nextEntry.id);
-      await onReload();
+      if (previous) await upsertEntryRemote(user.id, previous);
     }
   };
 
   const undo = async () => {
+    if (!user) return;
     try {
-      if (lastEntry) await db.habitEntries.put(lastEntry);
-      else if (entry) await db.habitEntries.delete(entry.id);
+      if (lastEntry) await upsertEntryRemote(user.id, lastEntry);
+      else if (entry) await deleteEntryRemote(user.id, entry.id);
       await onReload();
       onAnnounce("Accion deshecha.");
     } catch {
@@ -962,57 +1064,71 @@ function StatsPanel({
 function HabitsPanel({
   habits,
   schedules,
+  entries,
   onReload,
   onError,
-  settings,
-  accountKey
+  settings
 }: {
   habits: Habit[];
   schedules: HabitSchedule[];
+  entries: HabitEntry[];
   onReload: () => Promise<void>;
   onError: (error: string) => void;
   settings: Settings;
-  accountKey: string;
 }) {
+  const { user } = useAuth();
   const [editing, setEditing] = useState<Habit | null>(null);
   const [open, setOpen] = useState(false);
   const visible = habits.filter((habit) => !habit.deletedAt).sort((a, b) => a.sortOrder - b.sortOrder);
   const deleted = habits.filter((habit) => habit.deletedAt);
 
   const move = async (habit: Habit, direction: -1 | 1) => {
+    if (!user) return;
     const index = visible.findIndex((item) => item.id === habit.id);
     const other = visible[index + direction];
     if (!other) return;
-    await db.transaction("rw", db.habits, async () => {
-      await db.habits.update(habit.id, { sortOrder: other.sortOrder, updatedAt: nowIso() });
-      await db.habits.update(other.id, { sortOrder: habit.sortOrder, updatedAt: nowIso() });
-    });
+    await Promise.all([
+      upsertHabitRemote(user.id, { ...habit, sortOrder: other.sortOrder, updatedAt: nowIso(), userId: user.id }),
+      upsertHabitRemote(user.id, { ...other, sortOrder: habit.sortOrder, updatedAt: nowIso(), userId: user.id })
+    ]);
     await onReload();
   };
 
   const duplicate = async (habit: Habit) => {
+    if (!user) return;
     const id = crypto.randomUUID();
     const now = nowIso();
-    await db.transaction("rw", db.habits, db.habitSchedules, async () => {
-      await db.habits.add({ ...habit, id, accountEmail: accountEmailForRecord(accountKey), name: `${habit.name} copia`, sortOrder: nextSortOrder(habits), createdAt: now, updatedAt: now, archivedAt: undefined, deletedAt: undefined });
-      await db.habitSchedules.bulkAdd(schedules.filter((schedule) => schedule.habitId === habit.id).map((schedule) => ({ ...schedule, id: `${id}-${schedule.dayOfWeek}`, habitId: id, accountEmail: accountEmailForRecord(accountKey) })));
+    await upsertHabitRemote(user.id, {
+      ...habit,
+      id,
+      userId: user.id,
+      name: `${habit.name} copia`,
+      sortOrder: nextSortOrder(habits),
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: undefined,
+      deletedAt: undefined
     });
+    await upsertSchedulesRemote(
+      user.id,
+      schedules
+        .filter((schedule) => schedule.habitId === habit.id)
+        .map((schedule) => ({ ...schedule, id: `${id}-${schedule.dayOfWeek}`, habitId: id, userId: user.id }))
+    );
     await onReload();
   };
 
   const updateStamp = async (habit: Habit, patch: Partial<Habit>) => {
-    await db.habits.update(habit.id, { ...patch, updatedAt: nowIso() });
+    if (!user) return;
+    await upsertHabitRemote(user.id, { ...habit, ...patch, updatedAt: nowIso(), userId: user.id });
     await onReload();
   };
 
   const permanentDelete = async (habit: Habit) => {
+    if (!user) return;
     if (!window.confirm(`Eliminar definitivamente "${habit.name}" y sus registros?`)) return;
-    await saveAutomaticBackup("pre-permanent-delete");
-    await db.transaction("rw", db.habits, db.habitSchedules, db.habitEntries, async () => {
-      await db.habitEntries.where("habitId").equals(habit.id).delete();
-      await db.habitSchedules.where("habitId").equals(habit.id).delete();
-      await db.habits.delete(habit.id);
-    });
+    await saveAutomaticBackup(createWorkspaceSnapshot(settings, habits, schedules, entries), "pre-permanent-delete");
+    await deleteHabitRemote(user.id, habit.id);
     await onReload();
   };
 
@@ -1060,7 +1176,7 @@ function HabitsPanel({
           </div>
         </div>
       ) : null}
-      <HabitDialog open={open} onOpenChange={setOpen} habit={editing} schedules={schedules} habits={habits} settings={settings} accountKey={accountKey} onReload={onReload} onError={onError} />
+      <HabitDialog open={open} onOpenChange={setOpen} habit={editing} schedules={schedules} habits={habits} settings={settings} onReload={onReload} onError={onError} />
     </section>
   );
 }
@@ -1072,7 +1188,6 @@ function HabitDialog({
   schedules,
   habits,
   settings,
-  accountKey,
   onReload,
   onError
 }: {
@@ -1082,10 +1197,10 @@ function HabitDialog({
   schedules: HabitSchedule[];
   habits: Habit[];
   settings: Settings;
-  accountKey: string;
   onReload: () => Promise<void>;
   onError: (error: string) => void;
 }) {
+  const { user } = useAuth();
   const habitSchedules = habit ? schedules.filter((schedule) => schedule.habitId === habit.id && schedule.enabled).map((schedule) => schedule.dayOfWeek) : ALL_WEEKDAYS;
   const form = useForm<HabitFormValues>({
     resolver: zodResolver(habitFormSchema),
@@ -1106,11 +1221,12 @@ function HabitDialog({
   const selectedScheduleDays = form.watch("scheduleDays");
 
   const submit = form.handleSubmit(async (values) => {
+    if (!user) return;
     const now = nowIso();
     const id = habit?.id ?? crypto.randomUUID();
     const nextHabit: Habit = {
       id,
-      accountEmail: accountEmailForRecord(accountKey),
+      userId: user.id,
       name: values.name,
       description: values.description || undefined,
       type: values.type as HabitType,
@@ -1128,11 +1244,14 @@ function HabitDialog({
       updatedAt: now
     };
     try {
-      await db.transaction("rw", db.habits, db.habitSchedules, async () => {
-        await db.habits.put(nextHabit);
-        await db.habitSchedules.where("habitId").equals(id).delete();
-        await db.habitSchedules.bulkPut(schedulesForHabit(id, values.scheduleDays, accountKey));
-      });
+      await upsertHabitRemote(user.id, nextHabit);
+      await upsertSchedulesRemote(
+        user.id,
+        schedulesForHabit(id, values.scheduleDays).map((schedule) => ({
+          ...schedule,
+          userId: user.id
+        }))
+      );
       onOpenChange(false);
       await onReload();
     } catch {
@@ -1198,29 +1317,29 @@ function HabitDialog({
 
 function SettingsPanel({
   settings,
-  authSession,
-  accountKey,
-  onAccountChanged,
+  workspace,
   onSignedOut,
   onReload,
   onSettings,
-  onError
+  onError,
+  userEmail
 }: {
   settings: Settings;
-  authSession: AuthSession | null;
-  accountKey: string;
-  onAccountChanged: () => Promise<void>;
+  workspace: WorkspaceSnapshot;
   onSignedOut: () => void;
   onReload: () => Promise<void>;
   onSettings: (settings: Settings) => void;
   onError: (error: string) => void;
+  userEmail: string;
 }) {
+  const { user } = useAuth();
   const [importPayload, setImportPayload] = useState<ExportPayload | null>(null);
   const [summary, setSummary] = useState("");
 
   const updateSettings = async (patch: Partial<Settings>) => {
     const next = { ...settings, ...patch, updatedAt: nowIso() };
-    await db.settings.put(next);
+    if (!user) return;
+    await saveSettingsRemote(user.id, { ...next, userId: user.id });
     onSettings(next);
     await onReload();
   };
@@ -1240,8 +1359,9 @@ function SettingsPanel({
     if (!importPayload) return;
     if (!window.confirm(mode === "replace" ? "Sustituir todos los datos existentes?" : "Fusionar datos importados con los actuales?")) return;
     try {
-      if (mode === "replace") await replaceAllData(importPayload);
-      else await mergeData(importPayload);
+      if (!user) return;
+      if (mode === "replace") await replaceAllData(user.id, importPayload, workspace);
+      else await mergeData(user.id, importPayload, workspace);
       setImportPayload(null);
       await onReload();
     } catch {
@@ -1250,44 +1370,31 @@ function SettingsPanel({
   };
 
   const deleteAll = async () => {
+    if (!user) return;
     if (!window.confirm("Eliminar todos los datos locales? Exporta una copia antes si quieres conservarlos.")) return;
-    await saveAutomaticBackup("pre-delete-all");
-    const scopedHabits = (await db.habits.toArray()).filter((habit) =>
-      accountMatches(habit.accountEmail, accountKey)
-    );
-    const habitIds = new Set(scopedHabits.map((habit) => habit.id));
-    const scopedSchedules = (await db.habitSchedules.toArray()).filter(
-      (schedule) => accountMatches(schedule.accountEmail, accountKey) && habitIds.has(schedule.habitId)
-    );
-    const scopedEntries = (await db.habitEntries.toArray()).filter(
-      (entry) => accountMatches(entry.accountEmail, accountKey) && habitIds.has(entry.habitId)
-    );
-    await db.transaction("rw", db.settings, db.habits, db.habitSchedules, db.habitEntries, async () => {
-      await db.habitEntries.bulkDelete(scopedEntries.map((entry) => entry.id));
-      await db.habitSchedules.bulkDelete(scopedSchedules.map((schedule) => schedule.id));
-      await db.habits.bulkDelete(scopedHabits.map((habit) => habit.id));
-      await db.settings.delete(settings.id);
-    });
-    window.location.reload();
+    await saveAutomaticBackup(workspace, "pre-delete-all");
+    await deleteWorkspaceRemote(user.id);
+    await clearLegacyLocalWorkspace();
+    await onSignedOut();
   };
 
   return (
     <section>
-      <Header eyebrow="Ajustes" title="Datos locales y preferencias" />
+      <Header eyebrow="Ajustes" title="Cuenta, datos y preferencias" />
       <div className="grid gap-4 lg:grid-cols-2">
-        {authSession ? (
+        {user ? (
           <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft lg:col-span-2">
             <h2 className="text-xl font-semibold">Cuenta</h2>
             <p className="mt-2 text-sm text-turquoise-blue-800">
-              Datos locales activos para {authSession.email}.
+              Datos sincronizados para {userEmail}.
             </p>
-            <button className="mt-4 btn-secondary" onClick={() => void signOut().then(onSignedOut)}>
+            <button className="mt-4 btn-secondary" onClick={() => void onSignedOut()}>
               Cerrar sesion
             </button>
           </div>
         ) : (
           <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft lg:col-span-2">
-            <GoogleLogin onSignedIn={() => void onAccountChanged()} />
+            <GoogleLogin />
           </div>
         )}
         <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft">
@@ -1304,8 +1411,8 @@ function SettingsPanel({
         <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft">
           <h2 className="text-xl font-semibold">Copias de seguridad</h2>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button className="btn-primary" onClick={() => void exportJsonBlob().then((blob) => downloadBlob(blob, `habitos-${todayIso()}.json`))}><Download className="h-5 w-5" aria-hidden /> JSON</button>
-            <button className="btn-secondary" onClick={() => void exportCsvBlob().then((blob) => downloadBlob(blob, `historial-${todayIso()}.csv`))}><Download className="h-5 w-5" aria-hidden /> CSV</button>
+            <button className="btn-primary" onClick={() => void exportJsonBlob(workspace).then((blob) => downloadBlob(blob, `habitos-${todayIso()}.json`))}><Download className="h-5 w-5" aria-hidden /> JSON</button>
+            <button className="btn-secondary" onClick={() => void exportCsvBlob(workspace).then((blob) => downloadBlob(blob, `historial-${todayIso()}.csv`))}><Download className="h-5 w-5" aria-hidden /> CSV</button>
             <Label.Root className="btn-secondary cursor-pointer"><FileUp className="h-5 w-5" aria-hidden /> Importar<input className="sr-only" type="file" accept="application/json" onChange={(event) => void handleImport(event.target.files?.[0])} /></Label.Root>
           </div>
           {summary ? (
@@ -1329,7 +1436,7 @@ function HelpPanel() {
     <section>
       <Header eyebrow="Ayuda" title="Uso y limites" />
       <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft">
-        <p>La aplicacion funciona sin cuenta. IndexedDB es la fuente de verdad y las copias JSON permiten trasladar datos entre navegadores.</p>
+        <p>La aplicacion necesita iniciar sesion con Google para cargar el espacio correcto de datos.</p>
         <p className="mt-3">Si la aplicación permanece cerrada, los hábitos pendientes se marcarán como incompletos la próxima vez que se abra.</p>
         <p className="mt-3">La PWA puede hacer comprobaciones oportunistas, pero un navegador cerrado no garantiza ejecucion a medianoche.</p>
       </div>
@@ -1342,12 +1449,11 @@ function PrivacyPanel() {
     <section>
       <Header eyebrow="Privacidad" title="Datos en tu dispositivo" />
       <div className="space-y-3 rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft">
-        <p>No se requiere una cuenta.</p>
-        <p>Los datos se guardan localmente en IndexedDB.</p>
-        <p>No se transmiten hábitos, notas ni estadísticas a un servidor.</p>
-        <p>Borrar los datos del navegador puede eliminar el historial.</p>
-        <p>Debes exportar copias de seguridad si quieres conservar o trasladar los datos.</p>
-        <p>Los datos no se sincronizan automáticamente entre dispositivos.</p>
+        <p>Se usa tu cuenta de Google para separar tus datos del resto de usuarios.</p>
+        <p>Los datos se guardan en Firestore bajo tu UID y también pueden mantener una copia local de respaldo.</p>
+        <p>Borrar los datos del navegador puede eliminar el historial o la copia local.</p>
+        <p>Debes exportar copias de seguridad si quieres conservar o trasladar los datos manualmente.</p>
+        <p>Los datos se sincronizan entre dispositivos cuando inicias sesion con la misma cuenta.</p>
         <p>No hay analitica de terceros, publicidad ni pixeles de seguimiento por defecto.</p>
         <p>Esta aplicación ayuda a registrar hábitos y no sustituye asesoramiento médico.</p>
       </div>

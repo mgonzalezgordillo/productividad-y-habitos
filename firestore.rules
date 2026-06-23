@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function ownsPayload() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read, create, update, delete: if isOwner(userId) && ownsPayload();
+
+      match /settings/{settingId} {
+        allow read, create, update, delete: if isOwner(userId) && ownsPayload();
+      }
+
+      match /habits/{habitId} {
+        allow read, create, update, delete: if isOwner(userId) && ownsPayload();
+      }
+
+      match /habitSchedules/{scheduleId} {
+        allow read, create, update, delete: if isOwner(userId) && ownsPayload();
+      }
+
+      match /habitEntries/{entryId} {
+        allow read, create, update, delete: if isOwner(userId) && ownsPayload();
+      }
+    }
+  }
+}
