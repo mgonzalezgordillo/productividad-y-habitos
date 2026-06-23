@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #0d313f;
+  background: #eefcfd;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: #eefcfd;
+  color: #0d313f;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid #33c8dd;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.striped {
+  background-image: repeating-linear-gradient(
+    135deg,
+    #f3f4f6 0,
+    #f3f4f6 6px,
+    #d1d5db 6px,
+    #d1d5db 8px
+  );
+}
+
+@layer components {
+  .input {
+    @apply min-h-11 w-full rounded-md border border-turquoise-blue-200 bg-white px-3 py-2 text-turquoise-blue-950 shadow-sm;
+  }
+
+  .btn-primary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-turquoise-blue-600 px-4 py-2 font-medium text-white hover:bg-turquoise-blue-700 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-secondary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-turquoise-blue-200 bg-white px-4 py-2 font-medium text-turquoise-blue-950 hover:bg-turquoise-blue-50 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+}
