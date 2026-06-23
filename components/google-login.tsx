@@ -5,6 +5,7 @@ import { LogIn, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   allowedGoogleEmails,
+  googleAuthConfigError,
   googleClientId,
   saveAuthSession,
   validateGoogleCredential
@@ -48,9 +49,12 @@ export function GoogleLogin({ onSignedIn }: { onSignedIn: (session: AuthSession)
   const buttonRef = useRef<HTMLDivElement | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const configError =
+    googleAuthConfigError ??
+    (!googleClientId ? "No se ha podido iniciar sesion con Google porque la autenticacion no esta configurada correctamente." : null);
 
   useEffect(() => {
-    if (!loaded || !buttonRef.current || !window.google || !googleClientId) return;
+    if (configError || !loaded || !buttonRef.current || !window.google || !googleClientId) return;
     buttonRef.current.innerHTML = "";
     window.google.accounts.id.initialize({
       client_id: googleClientId,
@@ -77,11 +81,13 @@ export function GoogleLogin({ onSignedIn }: { onSignedIn: (session: AuthSession)
       width: 280,
       locale: "es"
     });
-  }, [loaded, onSignedIn]);
+  }, [configError, loaded, onSignedIn]);
 
   return (
     <div>
-      <Script src="https://accounts.google.com/gsi/client" async defer onLoad={() => setLoaded(true)} />
+      {googleClientId && !configError ? (
+        <Script src="https://accounts.google.com/gsi/client" async defer onLoad={() => setLoaded(true)} />
+      ) : null}
       <div className="mb-5 flex items-center gap-3">
         <span className="grid h-11 w-11 place-items-center rounded-md bg-turquoise-blue-100 text-turquoise-blue-800">
           <LogIn className="h-6 w-6" aria-hidden />
@@ -94,14 +100,14 @@ export function GoogleLogin({ onSignedIn }: { onSignedIn: (session: AuthSession)
       <p className="mb-5 text-sm text-turquoise-blue-800">
         Al iniciar sesion se usara un espacio de datos local asociado a ese email. Tus habitos siguen guardandose en este dispositivo.
       </p>
-      {googleClientId ? (
+      {googleClientId && !configError ? (
         <>
           <div ref={buttonRef} className="min-h-11" />
           {!loaded ? <p className="mt-3 text-sm text-turquoise-blue-800">Cargando Google...</p> : null}
         </>
       ) : (
         <p className="rounded-md border border-red-700 bg-red-50 p-3 text-sm text-red-900" role="alert">
-          Falta configurar NEXT_PUBLIC_GOOGLE_CLIENT_ID en GitHub Actions. Puedes usar el espacio local, pero el login no funcionara hasta configurarlo.
+          {configError} Revisa la variable NEXT_PUBLIC_GOOGLE_CLIENT_ID en GitHub Actions.
         </p>
       )}
       {allowedGoogleEmails.length ? (

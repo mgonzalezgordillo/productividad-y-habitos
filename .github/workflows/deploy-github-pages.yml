@@ -39,6 +39,12 @@ jobs:
       - name: Unit tests
         run: npm run test
 
+      - name: Validate Google OAuth config
+        env:
+          NEXT_PUBLIC_REQUIRE_GOOGLE_LOGIN: "true"
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+        run: npm run validate:oauth
+
       - name: Build static site
         env:
           GITHUB_PAGES: "true"
