@@ -11,13 +11,14 @@ export interface GoogleCredentialPayload {
 }
 
 export const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+export const requireGoogleLogin = process.env.NEXT_PUBLIC_REQUIRE_GOOGLE_LOGIN === "true";
 
 export const allowedGoogleEmails = (process.env.NEXT_PUBLIC_ALLOWED_GOOGLE_EMAILS ?? "")
   .split(",")
   .map((email) => email.trim().toLowerCase())
   .filter(Boolean);
 
-export const isGoogleAuthEnabled = Boolean(googleClientId);
+export const isGoogleAuthEnabled = requireGoogleLogin || Boolean(googleClientId);
 
 export const decodeGoogleCredential = (credential: string): GoogleCredentialPayload => {
   const [, payload] = credential.split(".");

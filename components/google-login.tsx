@@ -80,42 +80,48 @@ export function GoogleLogin({ onSignedIn }: { onSignedIn: (session: AuthSession)
   }, [loaded, onSignedIn]);
 
   return (
-    <main className="grid min-h-screen place-items-center bg-turquoise-blue-50 p-4">
+    <div>
       <Script src="https://accounts.google.com/gsi/client" async defer onLoad={() => setLoaded(true)} />
-      <section className="w-full max-w-md rounded-lg border border-turquoise-blue-100 bg-white p-6 shadow-soft">
-        <div className="mb-5 flex items-center gap-3">
-          <span className="grid h-11 w-11 place-items-center rounded-md bg-turquoise-blue-100 text-turquoise-blue-800">
-            <LogIn className="h-6 w-6" aria-hidden />
-          </span>
-          <div>
-            <p className="text-sm font-semibold text-turquoise-blue-700">Acceso</p>
-            <h1 className="text-2xl font-semibold">Inicia sesion con Google</h1>
-          </div>
+      <div className="mb-5 flex items-center gap-3">
+        <span className="grid h-11 w-11 place-items-center rounded-md bg-turquoise-blue-100 text-turquoise-blue-800">
+          <LogIn className="h-6 w-6" aria-hidden />
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-turquoise-blue-700">Cuenta</p>
+          <h2 className="text-xl font-semibold">Inicia sesion con Google</h2>
         </div>
-        <p className="mb-5 text-sm text-turquoise-blue-800">
-          Usa tu email de Google para entrar en esta instalacion. Tus habitos siguen guardandose en este dispositivo.
+      </div>
+      <p className="mb-5 text-sm text-turquoise-blue-800">
+        Al iniciar sesion se usara un espacio de datos local asociado a ese email. Tus habitos siguen guardandose en este dispositivo.
+      </p>
+      {googleClientId ? (
+        <>
+          <div ref={buttonRef} className="min-h-11" />
+          {!loaded ? <p className="mt-3 text-sm text-turquoise-blue-800">Cargando Google...</p> : null}
+        </>
+      ) : (
+        <p className="rounded-md border border-red-700 bg-red-50 p-3 text-sm text-red-900" role="alert">
+          Falta configurar NEXT_PUBLIC_GOOGLE_CLIENT_ID en GitHub Actions. Puedes usar el espacio local, pero el login no funcionara hasta configurarlo.
         </p>
-        <div ref={buttonRef} className="min-h-11" />
-        {!loaded ? <p className="mt-3 text-sm text-turquoise-blue-800">Cargando Google...</p> : null}
-        {allowedGoogleEmails.length ? (
-          <p className="mt-4 text-sm text-turquoise-blue-800">
-            Emails permitidos: {allowedGoogleEmails.join(", ")}
+      )}
+      {allowedGoogleEmails.length ? (
+        <p className="mt-4 text-sm text-turquoise-blue-800">
+          Emails permitidos: {allowedGoogleEmails.join(", ")}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="mt-4 rounded-md border border-red-700 bg-red-50 p-3 text-sm text-red-900" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+        <div className="flex gap-2">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+          <p>
+            En GitHub Pages esta separacion por cuenta es local al navegador. Para privacidad fuerte usa un proveedor con control de acceso del lado servidor.
           </p>
-        ) : null}
-        {error ? (
-          <p className="mt-4 rounded-md border border-red-700 bg-red-50 p-3 text-sm text-red-900" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          <div className="flex gap-2">
-            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
-            <p>
-              En GitHub Pages este login es una barrera de interfaz. Para privacidad fuerte usa un proveedor con control de acceso del lado servidor.
-            </p>
-          </div>
         </div>
-      </section>
-    </main>
+      </div>
+    </div>
   );
 }

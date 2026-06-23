@@ -1,8 +1,10 @@
 import { saveAutomaticBackup } from "./backup";
 import { db } from "./db";
 import type { HabitEntry } from "./types";
+import { LOCAL_ACCOUNT } from "./account";
 
-export const migrateDefaultSleepToHours = async (): Promise<boolean> => {
+export const migrateDefaultSleepToHours = async (accountKey = LOCAL_ACCOUNT): Promise<boolean> => {
+  if (accountKey !== LOCAL_ACCOUNT) return false;
   const sleepHabit = await db.habits.get("default-sleep-7h");
   if (!sleepHabit || sleepHabit.unit !== "minutos" || sleepHabit.targetValue !== 420) {
     return false;

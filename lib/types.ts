@@ -6,7 +6,8 @@ export type WeekdayIso = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export type PeriodKind = "1d" | "30d" | "90d" | "365d";
 
 export interface Settings {
-  id: "default";
+  id: string;
+  accountEmail?: string;
   timezone: string;
   dayBoundaryTime: string;
   locale: string;
@@ -18,6 +19,7 @@ export interface Settings {
 
 export interface Habit {
   id: string;
+  accountEmail?: string;
   name: string;
   description?: string;
   type: HabitType;
@@ -38,6 +40,7 @@ export interface Habit {
 export interface HabitSchedule {
   id: string;
   habitId: string;
+  accountEmail?: string;
   dayOfWeek: WeekdayIso;
   enabled: boolean;
 }
@@ -45,6 +48,7 @@ export interface HabitSchedule {
 export interface HabitEntry {
   id: string;
   habitId: string;
+  accountEmail?: string;
   localDate: string;
   status: EntryStatus;
   value?: number;

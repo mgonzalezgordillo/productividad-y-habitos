@@ -2,6 +2,7 @@ import { db } from "./db";
 import { daysBetweenInclusive, expiredDatesSince, nowUtcIso } from "./date";
 import { isHabitScheduled } from "./habits";
 import type { FinalizeResult, Habit, HabitEntry, HabitSchedule, Settings } from "./types";
+import { accountMatches, LOCAL_ACCOUNT } from "./account";
 
 export const earliestRelevantDate = (habits: Habit[]): string | null => {
   const active = habits.filter((habit) => !habit.deletedAt);
@@ -36,6 +37,7 @@ export const finalizeExpiredDaysData = (
       entries.push({
         id: crypto.randomUUID(),
         habitId: habit.id,
+        accountEmail: habit.accountEmail,
         localDate,
         status: "MISSED",
         value: 0,
@@ -51,17 +53,22 @@ export const finalizeExpiredDaysData = (
 
 export const finalizeExpiredDays = async (
   settings: Settings,
-  instant = new Date()
+  instant = new Date(),
+  accountKey = LOCAL_ACCOUNT
 ): Promise<FinalizeResult> => {
-  const habits = await db.habits.toArray();
-  const schedules = await db.habitSchedules.toArray();
+  const habits = (await db.habits.toArray()).filter((habit) =>
+    accountMatches(habit.accountEmail, accountKey)
+  );
+  const schedules = (await db.habitSchedules.toArray()).filter((schedule) =>
+    accountMatches(schedule.accountEmail, accountKey)
+  );
   const earliest = earliestRelevantDate(habits);
   if (!earliest) return { created: 0, checkedDates: [] };
   const today = instant.toISOString().slice(0, 10);
-  const entries = await db.habitEntries
+  const entries = (await db.habitEntries
     .where("localDate")
     .between(earliest, today, true, true)
-    .toArray();
+    .toArray()).filter((entry) => accountMatches(entry.accountEmail, accountKey));
   const result = finalizeExpiredDaysData(habits, schedules, entries, settings, instant);
   if (result.entries.length) {
     await db.habitEntries.bulkAdd(result.entries);
