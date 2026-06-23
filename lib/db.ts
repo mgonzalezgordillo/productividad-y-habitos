@@ -28,6 +28,15 @@ export class HabitDatabase extends Dexie {
       appBackups: "id, version, createdAt, reason",
       authSessions: "id, email, expiresAt"
     });
+    this.version(3).stores({
+      settings: "id, accountEmail",
+      habits: "id, accountEmail, startDate, archivedAt, deletedAt, sortOrder",
+      habitSchedules: "id, habitId, accountEmail, dayOfWeek, [habitId+dayOfWeek]",
+      habitEntries:
+        "id, accountEmail, localDate, habitId, status, [habitId+localDate], [localDate+status], [accountEmail+localDate], updatedAt",
+      appBackups: "id, version, createdAt, reason",
+      authSessions: "id, email, expiresAt"
+    });
   }
 }
 

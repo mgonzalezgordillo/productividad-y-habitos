@@ -14,7 +14,8 @@ const weekday = z.union([
 ]);
 
 export const settingsSchema = z.object({
-  id: z.literal("default"),
+  id: z.string().min(1),
+  accountEmail: z.string().email().optional(),
   timezone: z.string().min(1),
   dayBoundaryTime: z.string().regex(/^0[0-6]:[0-5]\d$/),
   locale: z.string().min(2),
@@ -26,6 +27,7 @@ export const settingsSchema = z.object({
 
 export const habitSchema = z.object({
   id: z.string().min(1),
+  accountEmail: z.string().email().optional(),
   name: z.string().min(1).max(80),
   description: z.string().max(500).optional(),
   type: z.enum(["BOOLEAN", "QUANTITY", "DURATION", "COUNTER"]),
@@ -46,6 +48,7 @@ export const habitSchema = z.object({
 export const habitScheduleSchema = z.object({
   id: z.string().min(1),
   habitId: z.string().min(1),
+  accountEmail: z.string().email().optional(),
   dayOfWeek: weekday,
   enabled: z.boolean()
 });
@@ -53,6 +56,7 @@ export const habitScheduleSchema = z.object({
 export const habitEntrySchema = z.object({
   id: z.string().min(1),
   habitId: z.string().min(1),
+  accountEmail: z.string().email().optional(),
   localDate: isoDate,
   status: z.enum(["PENDING", "COMPLETED", "MISSED", "SKIPPED", "NOT_SCHEDULED"]),
   value: z.number().nonnegative().optional(),

@@ -1,4 +1,4 @@
-const VERSION = "habitos-v1";
+const VERSION = "habitos-v2";
 const BASE_PATH = self.location.pathname.replace(/\/sw\.js$/, "");
 const withBasePath = (path) => `${BASE_PATH}${path}`;
 const SHELL = [withBasePath("/"), withBasePath("/offline.html"), withBasePath("/manifest.webmanifest"), withBasePath("/icon.svg")];

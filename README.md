@@ -40,11 +40,22 @@ La imagen sirve el export estatico de Next.js en `http://localhost:8080`.
 Para activar el login, crea un OAuth Client ID de tipo Web en Google Cloud Console y configura:
 
 ```bash
-NEXT_PUBLIC_GOOGLE_CLIENT_ID=tu-client-id.apps.googleusercontent.com
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=TU_CLIENT_ID.apps.googleusercontent.com
+NEXT_PUBLIC_REQUIRE_GOOGLE_LOGIN=true
 NEXT_PUBLIC_ALLOWED_GOOGLE_EMAILS=persona1@gmail.com,persona2@gmail.com
 ```
 
-En GitHub Pages, define esas mismas claves como repository variables. Esta proteccion es una barrera de interfaz en una app estatica; para acceso privado fuerte hace falta un servicio con control de acceso del lado servidor.
+En GitHub Pages, define esas mismas claves como repository variables. El workflow valida que `NEXT_PUBLIC_GOOGLE_CLIENT_ID` no sea un placeholder y termine en `.apps.googleusercontent.com` antes de publicar. Esta proteccion es una barrera de interfaz en una app estatica; para acceso privado fuerte hace falta un servicio con control de acceso del lado servidor.
+
+Orígenes JavaScript autorizados para el cliente web de Google:
+
+- `http://localhost:3000`
+- `http://127.0.0.1:3000`
+- `https://mgonzalezgordillo.github.io`
+
+El flujo actual usa Google Identity Services con popup e ID Token, por lo que no requiere una redirect URI propia.
+
+El login aparece en `Ajustes`. Sin iniciar sesion se usa el espacio local del dispositivo. Al iniciar sesion con Google, la app cambia a un espacio de datos local asociado a ese email. Los datos no se sincronizan con Google ni con otros dispositivos.
 
 ## Persistencia
 

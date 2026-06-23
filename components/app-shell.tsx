@@ -45,6 +45,13 @@ import {
   replaceAllData,
   saveAutomaticBackup
 } from "@/lib/backup";
+import {
+  accountEmailForRecord,
+  accountKeyFromSession,
+  accountMatches,
+  LOCAL_ACCOUNT,
+  settingsIdForAccount
+} from "@/lib/account";
 import { currentOperationalDate, formatLocalDate, nextBoundaryAfter, shiftPeriod } from "@/lib/date";
 import { db } from "@/lib/db";
 import { finalizeExpiredDays } from "@/lib/finalize";
@@ -57,7 +64,7 @@ import {
   schedulesForHabit,
   statusForValue
 } from "@/lib/habits";
-import { getValidAuthSession, isGoogleAuthEnabled, signOut } from "@/lib/auth";
+import { getValidAuthSession, signOut } from "@/lib/auth";
 import { migrateDefaultSleepToHours } from "@/lib/local-migrations";
 import { calculatePeriodMetrics, calculateStreaks, computedStatusFor, getEntry } from "@/lib/metrics";
 import { registerServiceWorker } from "@/lib/pwa";
@@ -129,8 +136,9 @@ const normalizeDurationSelectValue = (value: number): string => {
   return String(value);
 };
 
-const emptySettings = (): Settings => ({
-  id: "default",
+const emptySettings = (accountKey = LOCAL_ACCOUNT): Settings => ({
+  id: settingsIdForAccount(accountKey),
+  accountEmail: accountEmailForRecord(accountKey),
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   dayBoundaryTime: "00:00",
   locale: "es-ES",
@@ -183,6 +191,7 @@ export function AppShell() {
   const [schedules, setSchedules] = useState<HabitSchedule[]>([]);
   const [entries, setEntries] = useState<HabitEntry[]>([]);
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [accountKey, setAccountKey] = useState(LOCAL_ACCOUNT);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -200,16 +209,29 @@ export function AppShell() {
   const loadData = useCallback(async (options?: { finalize?: boolean }) => {
     const validSession = await getValidAuthSession();
     setAuthSession(validSession);
-    const foundSettings = (await db.settings.get("default")) ?? null;
-    await migrateDefaultSleepToHours();
+    const nextAccountKey = accountKeyFromSession(validSession);
+    setAccountKey(nextAccountKey);
+    const settingsId = settingsIdForAccount(nextAccountKey);
+    const foundSettings = (await db.settings.get(settingsId)) ?? null;
+    await migrateDefaultSleepToHours(nextAccountKey);
     if (foundSettings && options?.finalize !== false) {
-      await finalizeExpiredDays(foundSettings);
+      await finalizeExpiredDays(foundSettings, new Date(), nextAccountKey);
     }
+    const scopedHabits = (await db.habits.orderBy("sortOrder").toArray()).filter((habit) =>
+      accountMatches(habit.accountEmail, nextAccountKey)
+    );
+    const habitIds = new Set(scopedHabits.map((habit) => habit.id));
+    const scopedSchedules = (await db.habitSchedules.toArray()).filter(
+      (schedule) => accountMatches(schedule.accountEmail, nextAccountKey) && habitIds.has(schedule.habitId)
+    );
+    const scopedEntries = (await db.habitEntries.toArray()).filter(
+      (entry) => accountMatches(entry.accountEmail, nextAccountKey) && habitIds.has(entry.habitId)
+    );
     const [nextSettings, nextHabits, nextSchedules, nextEntries] = await Promise.all([
-      db.settings.get("default"),
-      db.habits.orderBy("sortOrder").toArray(),
-      db.habitSchedules.toArray(),
-      db.habitEntries.toArray()
+      db.settings.get(settingsId),
+      Promise.resolve(scopedHabits),
+      Promise.resolve(scopedSchedules),
+      Promise.resolve(scopedEntries)
     ]);
     setSettings(nextSettings ?? null);
     setHabits(nextHabits);
@@ -261,12 +283,8 @@ export function AppShell() {
     return <div className="grid min-h-screen place-items-center bg-turquoise-blue-50">Cargando datos locales...</div>;
   }
 
-  if (isGoogleAuthEnabled && !authSession) {
-    return <GoogleLogin onSignedIn={(session) => { setAuthSession(session); void loadData(); }} />;
-  }
-
   if (!settings?.onboardingCompleted) {
-    return <Onboarding onComplete={loadData} existingHabits={habits} />;
+    return <Onboarding onComplete={loadData} existingHabits={habits} accountKey={accountKey} />;
   }
 
   const renderSection = () => {
@@ -281,6 +299,7 @@ export function AppShell() {
           setSelectedDate={setSelectedDate}
           onReload={loadData}
           onError={setError}
+          accountKey={accountKey}
         />
       );
     }
@@ -310,6 +329,7 @@ export function AppShell() {
           onReload={loadData}
           onError={setError}
           settings={settings}
+          accountKey={accountKey}
         />
       );
     }
@@ -318,7 +338,12 @@ export function AppShell() {
         <SettingsPanel
           settings={settings}
           authSession={authSession}
-          onSignedOut={() => setAuthSession(null)}
+          accountKey={accountKey}
+          onAccountChanged={loadData}
+          onSignedOut={() => {
+            setAuthSession(null);
+            void loadData();
+          }}
           onReload={loadData}
           onSettings={setSettings}
           onError={setError}
@@ -343,7 +368,7 @@ export function AppShell() {
                   <p className="break-all text-turquoise-blue-800">{authSession.email}</p>
                   <button
                     className="mt-2 min-h-9 text-sm text-turquoise-blue-700 underline"
-                    onClick={() => void signOut().then(() => setAuthSession(null))}
+                    onClick={() => void signOut().then(() => { setAuthSession(null); void loadData(); })}
                   >
                     Cerrar sesion
                   </button>
@@ -422,7 +447,15 @@ function NavButton({
   );
 }
 
-function Onboarding({ onComplete, existingHabits }: { onComplete: () => Promise<void>; existingHabits: Habit[] }) {
+function Onboarding({
+  onComplete,
+  existingHabits,
+  accountKey
+}: {
+  onComplete: () => Promise<void>;
+  existingHabits: Habit[];
+  accountKey: string;
+}) {
   const [submitting, setSubmitting] = useState(false);
   const form = useForm<z.infer<typeof onboardingSchema>>({
     resolver: zodResolver(onboardingSchema),
@@ -437,19 +470,19 @@ function Onboarding({ onComplete, existingHabits }: { onComplete: () => Promise<
     const now = nowIso();
     const startDate = currentOperationalDate(new Date(), values.timezone, values.dayBoundaryTime);
     const settings: Settings = {
-      ...emptySettings(),
+      ...emptySettings(accountKey),
       timezone: values.timezone,
       dayBoundaryTime: values.dayBoundaryTime,
       onboardingCompleted: true,
       createdAt: now,
       updatedAt: now
     };
-    const seed = defaultHabits(startDate).filter((habit) => !existingHabits.some((existing) => existing.id === habit.id));
+    const seed = defaultHabits(startDate, accountKey).filter((habit) => !existingHabits.some((existing) => existing.id === habit.id));
     await db.transaction("rw", db.settings, db.habits, db.habitSchedules, async () => {
       await db.settings.put(settings);
       if (seed.length) {
         await db.habits.bulkPut(seed);
-        await db.habitSchedules.bulkPut(seed.flatMap((habit) => schedulesForHabit(habit.id)));
+        await db.habitSchedules.bulkPut(seed.flatMap((habit) => schedulesForHabit(habit.id, ALL_WEEKDAYS, accountKey)));
       }
     });
     await onComplete();
@@ -514,7 +547,8 @@ function TodayPanel({
   selectedDate,
   setSelectedDate,
   onReload,
-  onError
+  onError,
+  accountKey
 }: {
   settings: Settings;
   habits: Habit[];
@@ -524,6 +558,7 @@ function TodayPanel({
   setSelectedDate: (date: string) => void;
   onReload: () => Promise<void>;
   onError: (error: string) => void;
+  accountKey: string;
 }) {
   const setSection = useUiStore((state) => state.setSection);
   const announce = useUiStore((state) => state.announce);
@@ -585,6 +620,7 @@ function TodayPanel({
             onReload={onReload}
             onError={onError}
             onAnnounce={announce}
+            accountKey={accountKey}
           />
         ))}
         <button className="btn-primary w-fit" onClick={() => setSection("habits")}>
@@ -604,7 +640,8 @@ function HabitCard({
   selectedDate,
   onReload,
   onError,
-  onAnnounce
+  onAnnounce,
+  accountKey
 }: {
   settings: Settings;
   habit: Habit;
@@ -615,6 +652,7 @@ function HabitCard({
   onReload: () => Promise<void>;
   onError: (error: string) => void;
   onAnnounce: (message: string) => void;
+  accountKey: string;
 }) {
   const [draftValue, setDraftValue] = useState(String(entry?.value ?? ""));
   const [draftNote, setDraftNote] = useState(entry?.note ?? "");
@@ -637,6 +675,7 @@ function HabitCard({
     const nextEntry: HabitEntry = {
       id: previous?.id ?? crypto.randomUUID(),
       habitId: habit.id,
+      accountEmail: accountEmailForRecord(accountKey),
       localDate: selectedDate,
       status: computed,
       value,
@@ -925,13 +964,15 @@ function HabitsPanel({
   schedules,
   onReload,
   onError,
-  settings
+  settings,
+  accountKey
 }: {
   habits: Habit[];
   schedules: HabitSchedule[];
   onReload: () => Promise<void>;
   onError: (error: string) => void;
   settings: Settings;
+  accountKey: string;
 }) {
   const [editing, setEditing] = useState<Habit | null>(null);
   const [open, setOpen] = useState(false);
@@ -953,8 +994,8 @@ function HabitsPanel({
     const id = crypto.randomUUID();
     const now = nowIso();
     await db.transaction("rw", db.habits, db.habitSchedules, async () => {
-      await db.habits.add({ ...habit, id, name: `${habit.name} copia`, sortOrder: nextSortOrder(habits), createdAt: now, updatedAt: now, archivedAt: undefined, deletedAt: undefined });
-      await db.habitSchedules.bulkAdd(schedules.filter((schedule) => schedule.habitId === habit.id).map((schedule) => ({ ...schedule, id: `${id}-${schedule.dayOfWeek}`, habitId: id })));
+      await db.habits.add({ ...habit, id, accountEmail: accountEmailForRecord(accountKey), name: `${habit.name} copia`, sortOrder: nextSortOrder(habits), createdAt: now, updatedAt: now, archivedAt: undefined, deletedAt: undefined });
+      await db.habitSchedules.bulkAdd(schedules.filter((schedule) => schedule.habitId === habit.id).map((schedule) => ({ ...schedule, id: `${id}-${schedule.dayOfWeek}`, habitId: id, accountEmail: accountEmailForRecord(accountKey) })));
     });
     await onReload();
   };
@@ -1019,7 +1060,7 @@ function HabitsPanel({
           </div>
         </div>
       ) : null}
-      <HabitDialog open={open} onOpenChange={setOpen} habit={editing} schedules={schedules} habits={habits} settings={settings} onReload={onReload} onError={onError} />
+      <HabitDialog open={open} onOpenChange={setOpen} habit={editing} schedules={schedules} habits={habits} settings={settings} accountKey={accountKey} onReload={onReload} onError={onError} />
     </section>
   );
 }
@@ -1031,6 +1072,7 @@ function HabitDialog({
   schedules,
   habits,
   settings,
+  accountKey,
   onReload,
   onError
 }: {
@@ -1040,6 +1082,7 @@ function HabitDialog({
   schedules: HabitSchedule[];
   habits: Habit[];
   settings: Settings;
+  accountKey: string;
   onReload: () => Promise<void>;
   onError: (error: string) => void;
 }) {
@@ -1067,6 +1110,7 @@ function HabitDialog({
     const id = habit?.id ?? crypto.randomUUID();
     const nextHabit: Habit = {
       id,
+      accountEmail: accountEmailForRecord(accountKey),
       name: values.name,
       description: values.description || undefined,
       type: values.type as HabitType,
@@ -1087,7 +1131,7 @@ function HabitDialog({
       await db.transaction("rw", db.habits, db.habitSchedules, async () => {
         await db.habits.put(nextHabit);
         await db.habitSchedules.where("habitId").equals(id).delete();
-        await db.habitSchedules.bulkPut(schedulesForHabit(id, values.scheduleDays));
+        await db.habitSchedules.bulkPut(schedulesForHabit(id, values.scheduleDays, accountKey));
       });
       onOpenChange(false);
       await onReload();
@@ -1155,6 +1199,8 @@ function HabitDialog({
 function SettingsPanel({
   settings,
   authSession,
+  accountKey,
+  onAccountChanged,
   onSignedOut,
   onReload,
   onSettings,
@@ -1162,6 +1208,8 @@ function SettingsPanel({
 }: {
   settings: Settings;
   authSession: AuthSession | null;
+  accountKey: string;
+  onAccountChanged: () => Promise<void>;
   onSignedOut: () => void;
   onReload: () => Promise<void>;
   onSettings: (settings: Settings) => void;
@@ -1204,11 +1252,21 @@ function SettingsPanel({
   const deleteAll = async () => {
     if (!window.confirm("Eliminar todos los datos locales? Exporta una copia antes si quieres conservarlos.")) return;
     await saveAutomaticBackup("pre-delete-all");
+    const scopedHabits = (await db.habits.toArray()).filter((habit) =>
+      accountMatches(habit.accountEmail, accountKey)
+    );
+    const habitIds = new Set(scopedHabits.map((habit) => habit.id));
+    const scopedSchedules = (await db.habitSchedules.toArray()).filter(
+      (schedule) => accountMatches(schedule.accountEmail, accountKey) && habitIds.has(schedule.habitId)
+    );
+    const scopedEntries = (await db.habitEntries.toArray()).filter(
+      (entry) => accountMatches(entry.accountEmail, accountKey) && habitIds.has(entry.habitId)
+    );
     await db.transaction("rw", db.settings, db.habits, db.habitSchedules, db.habitEntries, async () => {
-      await db.habitEntries.clear();
-      await db.habitSchedules.clear();
-      await db.habits.clear();
-      await db.settings.put({ ...emptySettings(), onboardingCompleted: false });
+      await db.habitEntries.bulkDelete(scopedEntries.map((entry) => entry.id));
+      await db.habitSchedules.bulkDelete(scopedSchedules.map((schedule) => schedule.id));
+      await db.habits.bulkDelete(scopedHabits.map((habit) => habit.id));
+      await db.settings.delete(settings.id);
     });
     window.location.reload();
   };
@@ -1219,15 +1277,19 @@ function SettingsPanel({
       <div className="grid gap-4 lg:grid-cols-2">
         {authSession ? (
           <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft lg:col-span-2">
-            <h2 className="text-xl font-semibold">Sesion</h2>
+            <h2 className="text-xl font-semibold">Cuenta</h2>
             <p className="mt-2 text-sm text-turquoise-blue-800">
-              Has iniciado sesion como {authSession.email}.
+              Datos locales activos para {authSession.email}.
             </p>
             <button className="mt-4 btn-secondary" onClick={() => void signOut().then(onSignedOut)}>
               Cerrar sesion
             </button>
           </div>
-        ) : null}
+        ) : (
+          <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft lg:col-span-2">
+            <GoogleLogin onSignedIn={() => void onAccountChanged()} />
+          </div>
+        )}
         <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft">
           <h2 className="text-xl font-semibold">Preferencias</h2>
           <div className="mt-4 grid gap-4">

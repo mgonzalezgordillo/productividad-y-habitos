@@ -5,6 +5,9 @@ coverage
 playwright-report
 test-results
 tsconfig.tsbuildinfo
-.env*.local
+.env
+.env.development
+.env.production
+.env.local
 npm-debug.log*
 HABITOS-ATOMICOS-JAMES-CLEAR.pdf
