@@ -48,6 +48,7 @@ import {
 import { currentOperationalDate, formatLocalDate, nextBoundaryAfter, shiftPeriod } from "@/lib/date";
 import { db } from "@/lib/db";
 import { finalizeExpiredDays } from "@/lib/finalize";
+import { GoogleLogin } from "@/components/google-login";
 import {
   ALL_WEEKDAYS,
   defaultHabits,
@@ -56,6 +57,7 @@ import {
   schedulesForHabit,
   statusForValue
 } from "@/lib/habits";
+import { getValidAuthSession, isGoogleAuthEnabled, signOut } from "@/lib/auth";
 import { migrateDefaultSleepToHours } from "@/lib/local-migrations";
 import { calculatePeriodMetrics, calculateStreaks, computedStatusFor, getEntry } from "@/lib/metrics";
 import { registerServiceWorker } from "@/lib/pwa";
@@ -70,6 +72,7 @@ import type {
   HabitType,
   PeriodKind,
   Settings,
+  AuthSession
 } from "@/lib/types";
 
 type Section = ReturnType<typeof useUiStore.getState>["section"];
@@ -179,6 +182,7 @@ export function AppShell() {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [schedules, setSchedules] = useState<HabitSchedule[]>([]);
   const [entries, setEntries] = useState<HabitEntry[]>([]);
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -194,6 +198,8 @@ export function AppShell() {
   const timerRef = useRef<number | null>(null);
 
   const loadData = useCallback(async (options?: { finalize?: boolean }) => {
+    const validSession = await getValidAuthSession();
+    setAuthSession(validSession);
     const foundSettings = (await db.settings.get("default")) ?? null;
     await migrateDefaultSleepToHours();
     if (foundSettings && options?.finalize !== false) {
@@ -255,6 +261,10 @@ export function AppShell() {
     return <div className="grid min-h-screen place-items-center bg-turquoise-blue-50">Cargando datos locales...</div>;
   }
 
+  if (isGoogleAuthEnabled && !authSession) {
+    return <GoogleLogin onSignedIn={(session) => { setAuthSession(session); void loadData(); }} />;
+  }
+
   if (!settings?.onboardingCompleted) {
     return <Onboarding onComplete={loadData} existingHabits={habits} />;
   }
@@ -307,6 +317,8 @@ export function AppShell() {
       return (
         <SettingsPanel
           settings={settings}
+          authSession={authSession}
+          onSignedOut={() => setAuthSession(null)}
           onReload={loadData}
           onSettings={setSettings}
           onError={setError}
@@ -325,6 +337,18 @@ export function AppShell() {
             <div className="mb-8">
               <p className="text-lg font-semibold">Habitos</p>
               <p className="text-sm text-turquoise-blue-800">Local-first</p>
+              {authSession ? (
+                <div className="mt-4 rounded-md border border-turquoise-blue-100 bg-turquoise-blue-50 p-3 text-sm">
+                  <p className="font-medium">{authSession.name}</p>
+                  <p className="break-all text-turquoise-blue-800">{authSession.email}</p>
+                  <button
+                    className="mt-2 min-h-9 text-sm text-turquoise-blue-700 underline"
+                    onClick={() => void signOut().then(() => setAuthSession(null))}
+                  >
+                    Cerrar sesion
+                  </button>
+                </div>
+              ) : null}
             </div>
             <nav className="space-y-2" aria-label="Navegacion principal">
               {allSections.map((item) => (
@@ -1130,11 +1154,15 @@ function HabitDialog({
 
 function SettingsPanel({
   settings,
+  authSession,
+  onSignedOut,
   onReload,
   onSettings,
   onError
 }: {
   settings: Settings;
+  authSession: AuthSession | null;
+  onSignedOut: () => void;
   onReload: () => Promise<void>;
   onSettings: (settings: Settings) => void;
   onError: (error: string) => void;
@@ -1189,6 +1217,17 @@ function SettingsPanel({
     <section>
       <Header eyebrow="Ajustes" title="Datos locales y preferencias" />
       <div className="grid gap-4 lg:grid-cols-2">
+        {authSession ? (
+          <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft lg:col-span-2">
+            <h2 className="text-xl font-semibold">Sesion</h2>
+            <p className="mt-2 text-sm text-turquoise-blue-800">
+              Has iniciado sesion como {authSession.email}.
+            </p>
+            <button className="mt-4 btn-secondary" onClick={() => void signOut().then(onSignedOut)}>
+              Cerrar sesion
+            </button>
+          </div>
+        ) : null}
         <div className="rounded-lg border border-turquoise-blue-100 bg-white p-5 shadow-soft">
           <h2 className="text-xl font-semibold">Preferencias</h2>
           <div className="mt-4 grid gap-4">

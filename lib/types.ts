@@ -63,6 +63,17 @@ export interface AppBackup {
   createdAt: string;
 }
 
+export interface AuthSession {
+  id: "google";
+  email: string;
+  name: string;
+  picture?: string;
+  credential: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ExportPayload {
   schemaVersion: number;
   exportedAt: string;

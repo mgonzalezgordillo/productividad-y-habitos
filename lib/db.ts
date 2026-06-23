@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { AppBackup, Habit, HabitEntry, HabitSchedule, Settings } from "./types";
+import type { AppBackup, AuthSession, Habit, HabitEntry, HabitSchedule, Settings } from "./types";
 
 export class HabitDatabase extends Dexie {
   settings!: Table<Settings, string>;
@@ -7,6 +7,7 @@ export class HabitDatabase extends Dexie {
   habitSchedules!: Table<HabitSchedule, string>;
   habitEntries!: Table<HabitEntry, string>;
   appBackups!: Table<AppBackup, string>;
+  authSessions!: Table<AuthSession, string>;
 
   constructor(name = "habitos-local-first") {
     super(name);
@@ -17,6 +18,15 @@ export class HabitDatabase extends Dexie {
       habitEntries:
         "id, localDate, habitId, status, [habitId+localDate], [localDate+status], updatedAt",
       appBackups: "id, version, createdAt, reason"
+    });
+    this.version(2).stores({
+      settings: "id",
+      habits: "id, startDate, archivedAt, deletedAt, sortOrder",
+      habitSchedules: "id, habitId, dayOfWeek, [habitId+dayOfWeek]",
+      habitEntries:
+        "id, localDate, habitId, status, [habitId+localDate], [localDate+status], updatedAt",
+      appBackups: "id, version, createdAt, reason",
+      authSessions: "id, email, expiresAt"
     });
   }
 }
